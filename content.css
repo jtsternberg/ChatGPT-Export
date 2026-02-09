@@ -1,0 +1,95 @@
+#chatgpt-export-btn {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  z-index: 10000;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(142, 142, 160, 0.3);
+  background: var(--token-main-surface-primary, #ffffff);
+  color: var(--token-text-secondary, #6e6e80);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  transition: background 0.15s, color 0.15s, opacity 0.15s, transform 0.15s;
+}
+
+#chatgpt-export-btn:hover {
+  background: var(--token-bg-secondary, #f0f0f0);
+  color: var(--token-text-primary, #2d2d2d);
+  transform: scale(1.05);
+}
+
+#chatgpt-export-btn:active {
+  transform: scale(0.95);
+}
+
+#chatgpt-export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+#chatgpt-export-btn.exporting svg {
+  animation: chatgpt-export-spin 0.8s linear infinite;
+}
+
+@keyframes chatgpt-export-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  #chatgpt-export-btn {
+    background: var(--token-main-surface-primary, #212121);
+    border-color: rgba(142, 142, 160, 0.2);
+    color: var(--token-text-secondary, #acacbe);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  }
+
+  #chatgpt-export-btn:hover {
+    background: var(--token-bg-secondary, #2f2f2f);
+    color: var(--token-text-primary, #ececf1);
+  }
+}
+
+/* Toast notification */
+#chatgpt-export-toast {
+  position: fixed;
+  bottom: 130px;
+  right: 20px;
+  z-index: 10001;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--token-main-surface-primary, #ffffff);
+  color: var(--token-text-primary, #2d2d2d);
+  border: 1px solid rgba(142, 142, 160, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  animation: chatgpt-export-toast-in 0.2s ease-out;
+}
+
+@media (prefers-color-scheme: dark) {
+  #chatgpt-export-toast {
+    background: var(--token-main-surface-primary, #212121);
+    color: var(--token-text-primary, #ececf1);
+    border-color: rgba(142, 142, 160, 0.2);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+}
+
+@keyframes chatgpt-export-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
