@@ -2,25 +2,6 @@
 #chatgpt-export-btn {
   position: relative;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 5px 13px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--token-text-primary, #0d0d0d);
-  font-size: 14px;
-  font-family: inherit;
-  line-height: 1.5;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s;
-}
-
-#chatgpt-export-btn:hover,
-#chatgpt-export-btn:focus-visible {
-  background: var(--token-surface-hover, rgba(0, 0, 0, 0.05));
 }
 
 #chatgpt-export-btn:disabled {
@@ -38,12 +19,12 @@
 }
 
 /* Hide label on small screens, matching the share button's max-sm:hidden */
-@media (max-width: 639px) {
+/* @media (max-width: 639px) {
   #chatgpt-export-btn {
     padding: 5px 8px;
     font-size: 0;
   }
-}
+} */
 
 /* Fallback: if injected on body instead of header, use fixed positioning */
 body > #chatgpt-export-btn {
