@@ -1,36 +1,31 @@
+/* Header button — matches ChatGPT's native share button style */
 #chatgpt-export-btn {
-  position: fixed;
-  bottom: 80px;
-  right: 20px;
-  z-index: 10000;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 1px solid rgba(142, 142, 160, 0.3);
-  background: var(--token-main-surface-primary, #ffffff);
-  color: var(--token-text-secondary, #6e6e80);
-  cursor: pointer;
-  display: flex;
+  position: relative;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
-  transition: background 0.15s, color 0.15s, opacity 0.15s, transform 0.15s;
+  gap: 6px;
+  padding: 5px 13px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--token-text-primary, #0d0d0d);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
 }
 
-#chatgpt-export-btn:hover {
-  background: var(--token-bg-secondary, #f0f0f0);
-  color: var(--token-text-primary, #2d2d2d);
-  transform: scale(1.05);
-}
-
-#chatgpt-export-btn:active {
-  transform: scale(0.95);
+#chatgpt-export-btn:hover,
+#chatgpt-export-btn:focus-visible {
+  background: var(--token-surface-hover, rgba(0, 0, 0, 0.05));
 }
 
 #chatgpt-export-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
 }
 
 #chatgpt-export-btn.exporting svg {
@@ -42,26 +37,39 @@
   to { transform: rotate(360deg); }
 }
 
-/* Dark mode */
-@media (prefers-color-scheme: dark) {
+/* Hide label on small screens, matching the share button's max-sm:hidden */
+@media (max-width: 639px) {
   #chatgpt-export-btn {
-    background: var(--token-main-surface-primary, #212121);
-    border-color: rgba(142, 142, 160, 0.2);
-    color: var(--token-text-secondary, #acacbe);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    padding: 5px 8px;
+    font-size: 0;
   }
+}
 
-  #chatgpt-export-btn:hover {
-    background: var(--token-bg-secondary, #2f2f2f);
-    color: var(--token-text-primary, #ececf1);
-  }
+/* Fallback: if injected on body instead of header, use fixed positioning */
+body > #chatgpt-export-btn {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  z-index: 10000;
+  padding: 10px;
+  border-radius: 50%;
+  background: var(--token-main-surface-primary, #ffffff);
+  border: 1px solid rgba(142, 142, 160, 0.3);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  font-size: 0;
+  color: var(--token-text-secondary, #6e6e80);
+}
+
+body > #chatgpt-export-btn:hover {
+  background: var(--token-bg-secondary, #f0f0f0);
+  color: var(--token-text-primary, #2d2d2d);
 }
 
 /* Toast notification */
 #chatgpt-export-toast {
   position: fixed;
-  bottom: 130px;
-  right: 20px;
+  bottom: 24px;
+  right: 24px;
   z-index: 10001;
   padding: 8px 16px;
   border-radius: 8px;
@@ -75,6 +83,13 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  body > #chatgpt-export-btn {
+    background: var(--token-main-surface-primary, #212121);
+    border-color: rgba(142, 142, 160, 0.2);
+    color: var(--token-text-secondary, #acacbe);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  }
+
   #chatgpt-export-toast {
     background: var(--token-main-surface-primary, #212121);
     color: var(--token-text-primary, #ececf1);

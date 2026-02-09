@@ -48,14 +48,16 @@
     btn.id = BUTTON_ID;
     btn.type = 'button';
     btn.title = 'Export conversation to Markdown';
-    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+    btn.innerHTML = `<div class="flex w-full items-center justify-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="-ms-0.5 icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export</div>`;
     btn.addEventListener('click', handleExport);
 
-    // Inject into the page — try the header area near the model/share buttons
-    const headerArea = document.querySelector('main .sticky, main header, main [class*="sticky"]');
-    if (headerArea) {
-      headerArea.style.position = 'relative';
-      headerArea.appendChild(btn);
+    // Inject next to the share button in #conversation-header-actions
+    const headerActions = document.getElementById('conversation-header-actions');
+    const shareBtn = headerActions && headerActions.querySelector('[data-testid="share-chat-button"]');
+    if (shareBtn) {
+      shareBtn.parentElement.insertBefore(btn, shareBtn);
+    } else if (headerActions) {
+      headerActions.prepend(btn);
     } else {
       // Fallback: fixed position via CSS
       document.body.appendChild(btn);
@@ -138,7 +140,6 @@
     }
 
     turns.forEach((article) => {
-      const role = article.getAttribute('data-turn');
       const messageEl = article.querySelector(SELECTORS.messageRole);
       if (!messageEl) return;
 
