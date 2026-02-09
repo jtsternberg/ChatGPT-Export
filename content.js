@@ -93,10 +93,13 @@
 
       const title = getConversationTitle();
       const filename = sanitizeFilename(title) + '.md';
+      const blob = new Blob([markdown], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
 
       chrome.runtime.sendMessage(
-        { action: 'download', markdown, filename },
+        { action: 'download', url, filename },
         (response) => {
+          URL.revokeObjectURL(url);
           if (response && response.success) {
             showToast('Exported!');
           } else {
