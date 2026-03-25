@@ -4,11 +4,11 @@
   const BUTTON_ID = 'chatgpt-export-btn';
   const SELECTORS = {
     thread: '#thread',
-    turn: 'article[data-testid^="conversation-turn-"]',
+    turn: '[data-testid^="conversation-turn-"]',
     messageRole: '[data-message-author-role]',
     userText: '.whitespace-pre-wrap',
     assistantContent: '.markdown.prose',
-    streamingIndicator: '[data-writing-block]',
+    streamingIndicator: 'button[data-testid="stop-button"]',
   };
 
   let debounceTimer = null;
