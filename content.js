@@ -144,42 +144,49 @@
     }
 
     turns.forEach((article) => {
-      const messageEl = article.querySelector(SELECTORS.messageRole);
-      if (!messageEl) return;
+      // A single turn can contain multiple message blocks (preamble,
+      // collapsed thinking, final response), each with its own
+      // [data-message-author-role] and .markdown.prose. Process each.
+      const messages = article.querySelectorAll(SELECTORS.messageRole);
+      if (!messages.length) return;
 
-      const authorRole = messageEl.getAttribute('data-message-author-role');
+      let headerEmitted = false;
 
-      if (authorRole === 'user') {
-        parts.push('##### You said:');
-      } else {
-        parts.push('###### ChatGPT said:');
-      }
-      parts.push('');
+      messages.forEach((messageEl) => {
+        const authorRole = messageEl.getAttribute('data-message-author-role');
+        if (authorRole !== 'user' && authorRole !== 'assistant') return;
 
-      if (authorRole === 'user') {
-        // User messages: extract images first, then text
-        const images = article.querySelectorAll('img');
-        images.forEach((img) => {
-          const alt = img.getAttribute('alt') || 'Image';
-          const src = img.getAttribute('src') || '';
-          parts.push('![' + alt + '](' + src + ')');
+        if (!headerEmitted) {
+          parts.push(authorRole === 'user' ? '##### You said:' : '###### ChatGPT said:');
           parts.push('');
-        });
-
-        const textEl = article.querySelector(SELECTORS.userText);
-        if (textEl) {
-          parts.push(textEl.textContent.trim());
-          parts.push('');
+          headerEmitted = true;
         }
-      } else {
-        // Assistant messages: convert rich HTML to Markdown
-        const contentEl = article.querySelector(SELECTORS.assistantContent);
-        if (contentEl) {
-          const md = htmlToMarkdown(contentEl);
-          parts.push(md.trim());
-          parts.push('');
+
+        if (authorRole === 'user') {
+          const images = messageEl.querySelectorAll('img');
+          images.forEach((img) => {
+            const alt = img.getAttribute('alt') || 'Image';
+            const src = img.getAttribute('src') || '';
+            parts.push('![' + alt + '](' + src + ')');
+            parts.push('');
+          });
+
+          const textEl = messageEl.querySelector(SELECTORS.userText);
+          if (textEl) {
+            parts.push(textEl.textContent.trim());
+            parts.push('');
+          }
+        } else {
+          const contentEl = messageEl.querySelector(SELECTORS.assistantContent);
+          if (contentEl) {
+            const md = htmlToMarkdown(contentEl);
+            if (md) {
+              parts.push(md.trim());
+              parts.push('');
+            }
+          }
         }
-      }
+      });
     });
 
     return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
