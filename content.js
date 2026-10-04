@@ -101,40 +101,52 @@
     try {
       let markdown = null;
       let title = getConversationTitle();
-      let partial = false;
+      let conversationId = null;
+      let partialReason = null;
+      const images = [];
       try {
-        const data = await fetchConversation();
-        markdown = conversationToMarkdown(data);
+        const data = await fetchConversationWithRetry(() => {
+          showToast('ChatGPT is rate-limiting requests. Export will retry automatically once it recovers…', { sticky: true });
+        });
+        markdown = conversationToMarkdown(data, images);
         if (data.title) title = data.title;
+        conversationId = data.conversation_id || getConversationId();
       } catch (err) {
         // The DOM only holds the turns ChatGPT has rendered, so a scrape of
         // a long conversation can be incomplete. Say so rather than fail.
         console.warn('[ChatGPT Export] API export failed; scraping the page instead.', err);
         markdown = scrapeConversation();
-        partial = true;
+        partialReason = err && err.status === 429
+          ? 'ChatGPT is rate-limiting requests'
+          : 'couldn\'t load the full conversation';
       }
       if (!markdown) {
         showToast('No conversation content found.');
         return;
       }
 
-      const filename = sanitizeFilename(title) + '.md';
-      const blob = new Blob([markdown], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
+      const baseName = sanitizeFilename(title);
+      let filename = baseName + '.md';
+      let missingImages = 0;
+      if (images.length) {
+        // Images need relative paths that survive moving the export, so a
+        // conversation with images becomes a folder: <title>/<title>.md + images/.
+        showToast('Downloading ' + images.length + ' image' + (images.length === 1 ? '' : 's') + '…');
+        const result = await exportImages(markdown, images, conversationId, baseName);
+        markdown = result.markdown;
+        missingImages = result.missing;
+        if (result.saved) filename = baseName + '/' + baseName + '.md';
+      }
 
-      chrome.runtime.sendMessage(
-        { action: 'download', url, filename },
-        (response) => {
-          URL.revokeObjectURL(url);
-          if (response && response.success) {
-            showToast(partial
-              ? 'Exported visible messages only — couldn\'t load the full conversation.'
-              : 'Exported!');
-          } else {
-            showToast('Export failed — check downloads permissions.');
-          }
-        }
-      );
+      const response = await downloadBlob(new Blob([markdown], { type: 'application/octet-stream' }), filename);
+      if (response && response.success) {
+        let message = 'Exported!';
+        if (partialReason) message = 'Exported visible messages only — ' + partialReason + '.';
+        else if (missingImages) message = 'Exported, but ' + missingImages + ' image' + (missingImages === 1 ? '' : 's') + ' couldn\'t be downloaded.';
+        showToast(message);
+      } else {
+        showToast('Export failed — check downloads permissions.');
+      }
     } catch (err) {
       console.error('[ChatGPT Export]', err);
       showToast('Export failed.');
@@ -181,11 +193,65 @@
       token = await getAccessToken();
       res = await fetchConversationWith(id, token);
     }
-    if (!res.ok) throw new Error('conversation HTTP ' + res.status);
+    if (!res.ok) throw httpError('conversation', res.status);
 
     const data = await res.json();
     if (!data || !data.mapping || !data.current_node) throw new Error('unexpected conversation shape');
     return data;
+  }
+
+  // 429s carry no Retry-After or rate-limit headers, so recovery is detected
+  // by watching ChatGPT's own conversation requests succeed (zero extra
+  // requests from us), with a fixed backoff in case the page stays idle.
+  const RATE_LIMIT_BACKOFF_MS = [30000, 60000, 120000, 240000];
+
+  async function fetchConversationWithRetry(onRateLimited) {
+    const startId = getConversationId();
+    let lastError = null;
+    for (let attempt = 0; attempt <= RATE_LIMIT_BACKOFF_MS.length; attempt++) {
+      if (attempt > 0) {
+        if (attempt === 1) onRateLimited();
+        await waitForRateLimitRecovery(RATE_LIMIT_BACKOFF_MS[attempt - 1]);
+        if (getConversationId() !== startId) throw new Error('navigated away while rate-limited');
+      }
+      try {
+        return await fetchConversation();
+      } catch (err) {
+        if (err.status !== 429) throw err;
+        lastError = err;
+      }
+    }
+    throw lastError;
+  }
+
+  // Resolves when the page's own /backend-api/conversation(s) request
+  // returns 200, or after timeoutMs, whichever comes first.
+  function waitForRateLimitRecovery(timeoutMs) {
+    return new Promise((resolve) => {
+      let observer = null;
+      const done = () => {
+        clearTimeout(timer);
+        if (observer) observer.disconnect();
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      try {
+        observer = new PerformanceObserver((list) => {
+          const recovered = list.getEntries().some((entry) =>
+            entry.responseStatus === 200 && /\/backend-api\/conversations?[/?]/.test(entry.name));
+          if (recovered) done();
+        });
+        observer.observe({ type: 'resource' });
+      } catch (err) {
+        observer = null; // No PerformanceObserver/responseStatus: backoff only.
+      }
+    });
+  }
+
+  function httpError(what, status) {
+    const err = new Error(what + ' HTTP ' + status);
+    err.status = status;
+    return err;
   }
 
   function fetchConversationWith(id, token) {
@@ -194,7 +260,7 @@
     });
   }
 
-  function conversationToMarkdown(data) {
+  function conversationToMarkdown(data, images) {
     // mapping is a tree (edits/regenerations branch it); current_node is the
     // leaf of the branch on screen, so walk up from it.
     const path = [];
@@ -214,7 +280,7 @@
     path.forEach((node) => {
       const message = node.message;
       if (!message) return;
-      const rendered = renderApiMessage(message);
+      const rendered = renderApiMessage(message, images);
       if (!rendered) return;
 
       if (rendered.role !== lastRole) {
@@ -233,7 +299,7 @@
   // Returns { role, text } for messages the ChatGPT UI shows, else null.
   // Tool calls, tool results, and reasoning ("thoughts") are hidden in the
   // UI and skipped here too.
-  function renderApiMessage(message) {
+  function renderApiMessage(message, images) {
     const metadata = message.metadata || {};
     if (metadata.is_visually_hidden_from_conversation) return null;
 
@@ -244,7 +310,7 @@
     if (role === 'user') {
       if (content.content_type !== 'text' && content.content_type !== 'multimodal_text') return null;
       const text = contentParts
-        .map((part) => (typeof part === 'string' ? part : renderAssetPart(part, 'Image attachment')))
+        .map((part) => (typeof part === 'string' ? part : renderAssetPart(part, 'Image attachment', images)))
         .filter(Boolean)
         .join('\n\n');
       return text.trim() ? { role, text } : null;
@@ -260,20 +326,128 @@
     // Image generation results arrive as tool messages but render as part of
     // the assistant's reply.
     if (role === 'tool' && content.content_type === 'multimodal_text') {
-      const images = contentParts
+      const generated = contentParts
         .filter((part) => part && part.content_type === 'image_asset_pointer' && part.metadata && part.metadata.dalle)
-        .map((part) => renderAssetPart(part, 'Generated image'));
-      return images.length ? { role: 'assistant', text: images.join('\n\n') } : null;
+        .map((part) => renderAssetPart(part, 'Generated image', images));
+      return generated.length ? { role: 'assistant', text: generated.join('\n\n') } : null;
     }
 
     return null;
   }
 
   // Asset pointers (sediment://, file-service://) only resolve inside
-  // ChatGPT, so emit a placeholder instead of a broken link.
-  function renderAssetPart(part, label) {
+  // ChatGPT. Emit a token that exportImages() swaps for a local image link,
+  // or for a placeholder if the image can't be fetched.
+  function renderAssetPart(part, label, images) {
     if (!part || part.content_type !== 'image_asset_pointer') return '';
-    return '*[' + label + ']*';
+    const fileId = String(part.asset_pointer || '').split('://')[1];
+    if (!fileId) return '*[' + label + ']*';
+    images.push({ fileId, label });
+    return imageToken(images.length - 1);
+  }
+
+  function imageToken(index) {
+    return '\u0000IMG' + index + '\u0000';
+  }
+
+  // ── Image export ──────────────────────────────────────────────────────
+
+  const IMAGE_MAX_DIMENSION = 1600;
+  const IMAGE_WEBP_QUALITY = 0.7;
+  const IMAGE_CONCURRENCY = 2;
+
+  async function exportImages(markdown, images, conversationId, baseName) {
+    const saved = new Map(); // fileId -> relative path, so repeats download once
+    let missing = 0;
+
+    const unique = [...new Set(images.map((image) => image.fileId))];
+    let next = 0;
+    async function worker() {
+      while (next < unique.length) {
+        const fileId = unique[next++];
+        try {
+          const original = await fetchImageBlob(fileId, conversationId);
+          const blob = await compressImage(original);
+          const relative = 'images/' + sanitizeFilename(fileId) + '.' + extensionFor(blob.type);
+          // Re-exports reuse the folder; the same fileId is the same image,
+          // so overwriting keeps the .md's relative links valid.
+          const response = await downloadBlob(blob, baseName + '/' + relative, 'overwrite');
+          if (!response || !response.success) throw new Error((response && response.error) || 'download failed');
+          saved.set(fileId, relative);
+        } catch (err) {
+          console.warn('[ChatGPT Export] Image ' + fileId + ' not exported:', err);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(IMAGE_CONCURRENCY, unique.length) }, worker));
+
+    const result = markdown.replace(/\u0000IMG(\d+)\u0000/g, (match, index) => {
+      const image = images[Number(index)];
+      const relative = saved.get(image.fileId);
+      if (relative) return '![' + image.label + '](' + relative + ')';
+      missing++;
+      return '*[' + image.label + ']*';
+    });
+    return { markdown: result, missing, saved: saved.size };
+  }
+
+  // Both endpoint shapes are tried: ChatGPT has served file downloads from
+  // each, and they return { download_url } pointing at the bytes.
+  async function fetchImageBlob(fileId, conversationId) {
+    const token = await getAccessToken();
+    const query = conversationId ? '?conversation_id=' + encodeURIComponent(conversationId) + '&inline=false' : '';
+    const endpoints = [
+      '/backend-api/files/download/' + encodeURIComponent(fileId) + query,
+      '/backend-api/files/' + encodeURIComponent(fileId) + '/download',
+    ];
+
+    let lastError = null;
+    for (const endpoint of endpoints) {
+      try {
+        const res = await fetch(endpoint, { headers: { Authorization: 'Bearer ' + token } });
+        if (!res.ok) throw httpError('file lookup', res.status);
+        const info = await res.json();
+        if (!info.download_url) throw new Error('no download_url');
+        const file = await fetch(new URL(info.download_url, location.origin).href);
+        if (!file.ok) throw httpError('file', file.status);
+        return await file.blob();
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError;
+  }
+
+  async function compressImage(blob) {
+    // GIFs may be animated and SVGs are already small vectors; keep both.
+    if (!/^image\/(png|jpeg|webp|bmp)$/.test(blob.type)) return blob;
+    try {
+      const bitmap = await createImageBitmap(blob);
+      const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
+      const canvas = new OffscreenCanvas(Math.round(bitmap.width * scale), Math.round(bitmap.height * scale));
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const compressed = await canvas.convertToBlob({ type: 'image/webp', quality: IMAGE_WEBP_QUALITY });
+      return compressed.size < blob.size ? compressed : blob;
+    } catch (err) {
+      console.warn('[ChatGPT Export] Image compression failed; keeping original.', err);
+      return blob;
+    }
+  }
+
+  function extensionFor(mimeType) {
+    const map = { 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
+    return map[mimeType] || 'bin';
+  }
+
+  function downloadBlob(blob, filename, conflictAction) {
+    const url = URL.createObjectURL(blob);
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: 'download', url, filename, conflictAction }, (response) => {
+        URL.revokeObjectURL(url);
+        resolve(response);
+      });
+    });
   }
 
   // Assistant text carries private-use markers (U+E200 … U+E201) where the
@@ -412,7 +586,7 @@
 
   // ── Toast notification ────────────────────────────────────────────────
 
-  function showToast(message) {
+  function showToast(message, { sticky = false } = {}) {
     const existing = document.getElementById('chatgpt-export-toast');
     if (existing) existing.remove();
 
@@ -421,7 +595,7 @@
     toast.textContent = message;
     document.body.appendChild(toast);
 
-    setTimeout(() => toast.remove(), 2500);
+    if (!sticky) setTimeout(() => toast.remove(), 2500);
   }
 
   // ── Conversation scraping ─────────────────────────────────────────────

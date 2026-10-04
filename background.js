@@ -3,6 +3,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.downloads.download({
       url: message.url,
       filename: message.filename,
+      conflictAction: message.conflictAction || 'uniquify',
       saveAs: false
     }, (downloadId) => {
       if (chrome.runtime.lastError) {
