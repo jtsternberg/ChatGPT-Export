@@ -99,13 +99,25 @@
     btn.classList.add('exporting');
 
     try {
-      const markdown = scrapeConversation();
+      let markdown = null;
+      let title = getConversationTitle();
+      let partial = false;
+      try {
+        const data = await fetchConversation();
+        markdown = conversationToMarkdown(data);
+        if (data.title) title = data.title;
+      } catch (err) {
+        // The DOM only holds the turns ChatGPT has rendered, so a scrape of
+        // a long conversation can be incomplete. Say so rather than fail.
+        console.warn('[ChatGPT Export] API export failed; scraping the page instead.', err);
+        markdown = scrapeConversation();
+        partial = true;
+      }
       if (!markdown) {
         showToast('No conversation content found.');
         return;
       }
 
-      const title = getConversationTitle();
       const filename = sanitizeFilename(title) + '.md';
       const blob = new Blob([markdown], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
@@ -115,7 +127,9 @@
         (response) => {
           URL.revokeObjectURL(url);
           if (response && response.success) {
-            showToast('Exported!');
+            showToast(partial
+              ? 'Exported visible messages only — couldn\'t load the full conversation.'
+              : 'Exported!');
           } else {
             showToast('Export failed — check downloads permissions.');
           }
@@ -128,6 +142,172 @@
       btn.disabled = false;
       btn.classList.remove('exporting');
     }
+  }
+
+  // ── Conversation API ──────────────────────────────────────────────────
+  // The same undocumented endpoint ChatGPT's own UI loads conversations
+  // from. Unlike the DOM it always holds every turn. Requests stay on
+  // chatgpt.com with the user's existing session.
+
+  let accessTokenPromise = null;
+
+  function getConversationId() {
+    const match = location.pathname.match(/\/c\/([^/]+)/);
+    return match ? match[1] : null;
+  }
+
+  function getAccessToken() {
+    if (!accessTokenPromise) {
+      accessTokenPromise = fetch('/api/auth/session')
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error('session HTTP ' + res.status))))
+        .then((session) => session.accessToken || Promise.reject(new Error('no accessToken in session')))
+        .catch((err) => {
+          accessTokenPromise = null;
+          throw err;
+        });
+    }
+    return accessTokenPromise;
+  }
+
+  async function fetchConversation() {
+    const id = getConversationId();
+    if (!id) throw new Error('no conversation id in URL');
+
+    let token = await getAccessToken();
+    let res = await fetchConversationWith(id, token);
+    if (res.status === 401) {
+      // Cached token expired; fetch a fresh one once.
+      accessTokenPromise = null;
+      token = await getAccessToken();
+      res = await fetchConversationWith(id, token);
+    }
+    if (!res.ok) throw new Error('conversation HTTP ' + res.status);
+
+    const data = await res.json();
+    if (!data || !data.mapping || !data.current_node) throw new Error('unexpected conversation shape');
+    return data;
+  }
+
+  function fetchConversationWith(id, token) {
+    return fetch('/backend-api/conversation/' + encodeURIComponent(id), {
+      headers: { Authorization: 'Bearer ' + token },
+    });
+  }
+
+  function conversationToMarkdown(data) {
+    // mapping is a tree (edits/regenerations branch it); current_node is the
+    // leaf of the branch on screen, so walk up from it.
+    const path = [];
+    const seen = new Set();
+    for (let id = data.current_node; id && data.mapping[id] && !seen.has(id); id = data.mapping[id].parent) {
+      seen.add(id);
+      path.unshift(data.mapping[id]);
+    }
+
+    const parts = [];
+    if (data.title) {
+      parts.push('# ' + data.title);
+      parts.push('');
+    }
+
+    let lastRole = null;
+    path.forEach((node) => {
+      const message = node.message;
+      if (!message) return;
+      const rendered = renderApiMessage(message);
+      if (!rendered) return;
+
+      if (rendered.role !== lastRole) {
+        parts.push(rendered.role === 'user' ? '##### You said:' : '###### ChatGPT said:');
+        parts.push('');
+        lastRole = rendered.role;
+      }
+      parts.push(rendered.text.trim());
+      parts.push('');
+    });
+
+    if (!lastRole) return null;
+    return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+  }
+
+  // Returns { role, text } for messages the ChatGPT UI shows, else null.
+  // Tool calls, tool results, and reasoning ("thoughts") are hidden in the
+  // UI and skipped here too.
+  function renderApiMessage(message) {
+    const metadata = message.metadata || {};
+    if (metadata.is_visually_hidden_from_conversation) return null;
+
+    const role = message.author && message.author.role;
+    const content = message.content || {};
+    const contentParts = Array.isArray(content.parts) ? content.parts : [];
+
+    if (role === 'user') {
+      if (content.content_type !== 'text' && content.content_type !== 'multimodal_text') return null;
+      const text = contentParts
+        .map((part) => (typeof part === 'string' ? part : renderAssetPart(part, 'Image attachment')))
+        .filter(Boolean)
+        .join('\n\n');
+      return text.trim() ? { role, text } : null;
+    }
+
+    if (role === 'assistant') {
+      if (message.recipient !== 'all' || content.content_type !== 'text') return null;
+      const raw = contentParts.filter((part) => typeof part === 'string').join('\n\n');
+      const text = applyContentReferences(raw, metadata.content_references);
+      return text.trim() ? { role, text } : null;
+    }
+
+    // Image generation results arrive as tool messages but render as part of
+    // the assistant's reply.
+    if (role === 'tool' && content.content_type === 'multimodal_text') {
+      const images = contentParts
+        .filter((part) => part && part.content_type === 'image_asset_pointer' && part.metadata && part.metadata.dalle)
+        .map((part) => renderAssetPart(part, 'Generated image'));
+      return images.length ? { role: 'assistant', text: images.join('\n\n') } : null;
+    }
+
+    return null;
+  }
+
+  // Asset pointers (sediment://, file-service://) only resolve inside
+  // ChatGPT, so emit a placeholder instead of a broken link.
+  function renderAssetPart(part, label) {
+    if (!part || part.content_type !== 'image_asset_pointer') return '';
+    return '*[' + label + ']*';
+  }
+
+  // Assistant text carries private-use markers (U+E200 … U+E201) where the
+  // UI shows citations and inline links. Each content_reference names its
+  // marker in matched_text and, for web sources, ready-made Markdown in alt.
+  function applyContentReferences(text, references) {
+    let result = '';
+    let cursor = 0;
+    const ordered = (references || [])
+      .filter((ref) => ref && ref.matched_text && ref.matched_text.trim())
+      .sort((a, b) => (a.start_idx || 0) - (b.start_idx || 0));
+
+    ordered.forEach((ref) => {
+      // start_idx may not count UTF-16 units, so locate the marker by text.
+      const index = text.indexOf(ref.matched_text, cursor);
+      if (index === -1) return;
+      result += text.slice(cursor, index) + renderContentReference(ref);
+      cursor = index + ref.matched_text.length;
+    });
+    result += text.slice(cursor);
+
+    // Drop any markers no reference explained.
+    return result.replace(/\ue200[^\ue201]*\ue201/g, '');
+  }
+
+  function renderContentReference(ref) {
+    // Markers sit where the UI shows the chip, already spaced from the text.
+    if (typeof ref.alt === 'string') return ref.alt;
+    if (ref.type === 'file' && ref.name) {
+      return ref.cloud_doc_url
+        ? '([' + ref.name + '](' + ref.cloud_doc_url + '))'
+        : '(' + ref.name + ')';
+    }
+    return '';
   }
 
   // ── Selector health check ─────────────────────────────────────────────

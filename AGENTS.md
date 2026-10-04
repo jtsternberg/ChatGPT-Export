@@ -21,8 +21,10 @@ icons/             - Extension icons (16/48/128px)
 - **IIFE wrapper** - everything runs in an immediately-invoked function
 - **SELECTORS object** - all DOM selectors in one place at the top
 - **Button injection** - `injectButton()` places the export button in `#conversation-header-actions` next to the share button
-- **Export handler** - `handleExport()` orchestrates scraping and download
-- **HTML-to-Markdown converter** - `convertNode()` recursive converter handles all HTML elements ChatGPT uses
+- **Export handler** - `handleExport()` tries the conversation API first, falls back to DOM scraping (toast says the export is partial), then downloads
+- **Conversation API** - `fetchConversation()` gets a token from `/api/auth/session`, then `GET /backend-api/conversation/<id>` (undocumented; what ChatGPT's UI uses). `conversationToMarkdown()` walks `mapping` from `current_node` up to the root. Only user `text`/`multimodal_text`, assistant `text` with `recipient: "all"`, and DALL·E tool images are emitted; tool calls and reasoning are skipped. Citations are U+E200…U+E201 markers in the text, replaced via `metadata.content_references[].matched_text` → `alt`
+- **DOM scrape (fallback)** - `scrapeConversation()` only sees rendered turns; long conversations lazy-load, so it can be incomplete
+- **HTML-to-Markdown converter** - `convertNode()` recursive converter handles all HTML elements ChatGPT uses (DOM fallback only)
 - **MutationObserver** - watches for SPA navigation, debounced at 300ms
 - **Selector health check** - `scheduleHealthCheck()` runs on each `/c/` page, retries for 10s, then shows a dismissible banner naming the `SELECTORS` that matched nothing (details in console). Add any new required selector to `findBrokenSelectors()`
 
@@ -51,7 +53,7 @@ CSS classes change often. `data-*` attributes are stable.
 - No build step - files are loaded directly by the browser
 - All DOM selectors are defined in the `SELECTORS` constant at the top of content.js
 - The HTML-to-Markdown converter only handles the subset of HTML that ChatGPT actually produces
-- 100% client-side - no data leaves the browser, no telemetry
+- 100% client-side - no data leaves the browser, no telemetry (API calls go only to chatgpt.com with the user's own session)
 - Domain is `chatgpt.com` (not `chat.openai.com`)
 
 ## Testing
