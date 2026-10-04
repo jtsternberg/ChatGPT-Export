@@ -4,10 +4,15 @@
   const BUTTON_ID = 'chatgpt-export-btn';
   const SELECTORS = {
     thread: '#thread',
-    turn: '[data-testid^="conversation-turn-"]',
-    messageRole: '[data-message-author-role]',
+    // Each list keeps the pre-2026-10 selector as a fallback: ChatGPT rolls
+    // DOM changes out gradually, so both shapes can be live at once.
+    turn: '[data-turn-key], [data-testid^="conversation-turn-"]',
+    message: '[data-chatgpt-search-unit-key], [data-message-author-role]',
     userText: '.whitespace-pre-wrap',
-    assistantContent: '.markdown.prose',
+    assistantContent: '[data-markdown-text-style="assistant-message"], .markdown.prose',
+    citation: 'a[data-testid="chatgpt-citation"]',
+    headerActions: '[data-app-shell-main-titlebar] .ms-auto, #conversation-header-actions',
+    shareButton: 'button[aria-label="Share"], [data-testid="share-chat-button"]',
     streamingIndicator: 'button[data-testid="stop-button"]',
   };
 
@@ -41,8 +46,18 @@
   }
 
   function injectButton() {
-    if (document.getElementById(BUTTON_ID)) return;
+    const existing = document.getElementById(BUTTON_ID);
+    // A body-fallback button is retried each pass so it moves into the
+    // header once ChatGPT renders it.
+    if (existing && existing.parentElement !== document.body) return;
     if (!isConversationPage()) return;
+
+    const headerActions = document.querySelector(SELECTORS.headerActions);
+    const shareBtn = headerActions && headerActions.querySelector(SELECTORS.shareButton);
+    if (existing) {
+      if (!headerActions) return;
+      existing.remove();
+    }
 
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
@@ -52,10 +67,9 @@
     btn.innerHTML = `<div class="flex w-full items-center justify-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="-ms-0.5 icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export</div>`;
     btn.addEventListener('click', handleExport);
 
-    // Inject next to the share button in #conversation-header-actions
-    const headerActions = document.getElementById('conversation-header-actions');
-    const shareBtn = headerActions && headerActions.querySelector('[data-testid="share-chat-button"]');
     if (shareBtn) {
+      // Borrow Share's classes so the button tracks ChatGPT's current styling.
+      btn.className = shareBtn.className;
       shareBtn.parentElement.insertBefore(btn, shareBtn);
     } else if (headerActions) {
       headerActions.prepend(btn);
@@ -116,6 +130,106 @@
     }
   }
 
+  // ── Selector health check ─────────────────────────────────────────────
+
+  const WARNING_ID = 'chatgpt-export-warning';
+  const WARNING_DISMISSED_KEY = 'chatgpt-export-warning-dismissed';
+  // Turns render progressively after navigation; only warn once they've had
+  // this long to appear.
+  const HEALTH_CHECK_TIMEOUT_MS = 10000;
+  const HEALTH_CHECK_LABELS = {
+    turn: 'conversation turns',
+    message: 'messages',
+    userText: 'your message text',
+    assistantContent: 'ChatGPT reply content',
+    shareButton: 'header Share button',
+  };
+  let healthCheckTimer = null;
+
+  function isSingleChatPage() {
+    // Also matches project chats: /g/<project>/c/<id>
+    return /\/c\/[^/]+/.test(location.pathname);
+  }
+
+  function findBrokenSelectors() {
+    // Without turns nothing else can be checked meaningfully.
+    if (!document.querySelector(SELECTORS.turn)) return ['turn'];
+
+    const broken = [];
+    const roles = Array.from(document.querySelectorAll(SELECTORS.message), getMessageRole);
+    if (!roles.includes('user') && !roles.includes('assistant')) broken.push('message');
+    if (roles.includes('user') && !document.querySelector(SELECTORS.userText)) broken.push('userText');
+    if (roles.includes('assistant') && !document.querySelector(SELECTORS.assistantContent)) {
+      broken.push('assistantContent');
+    }
+
+    const headerActions = document.querySelector(SELECTORS.headerActions);
+    if (!headerActions || !headerActions.querySelector(SELECTORS.shareButton)) broken.push('shareButton');
+
+    return broken;
+  }
+
+  function scheduleHealthCheck() {
+    clearTimeout(healthCheckTimer);
+    removeWarning();
+    if (!isSingleChatPage()) return;
+
+    const deadline = Date.now() + HEALTH_CHECK_TIMEOUT_MS;
+    const run = () => {
+      if (!isSingleChatPage()) return;
+      const broken = findBrokenSelectors();
+      if (!broken.length) return;
+      if (Date.now() < deadline) {
+        healthCheckTimer = setTimeout(run, 1000);
+        return;
+      }
+      console.warn('[ChatGPT Export] Selectors not matching:', broken.map((key) => key + ': ' + SELECTORS[key]));
+      showWarning(broken);
+    };
+    healthCheckTimer = setTimeout(run, 1000);
+  }
+
+  function showWarning(broken) {
+    // Keyed on the failing set so a new breakage still surfaces after a dismiss.
+    const signature = broken.join(',');
+    try {
+      if (sessionStorage.getItem(WARNING_DISMISSED_KEY) === signature) return;
+    } catch (e) { /* storage blocked; show anyway */ }
+
+    removeWarning();
+    const warning = document.createElement('div');
+    warning.id = WARNING_ID;
+    warning.setAttribute('role', 'alert');
+
+    const text = document.createElement('span');
+    const headerOnly = signature === 'shareButton';
+    text.textContent = 'ChatGPT Export can\'t find ' +
+      broken.map((key) => HEALTH_CHECK_LABELS[key]).join(', ') +
+      ' on this page. ChatGPT may have changed its layout' +
+      (headerOnly
+        ? ', so the Export button is in the bottom-right corner instead.'
+        : ', so exports may be incomplete.');
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '×';
+    close.addEventListener('click', () => {
+      try {
+        sessionStorage.setItem(WARNING_DISMISSED_KEY, signature);
+      } catch (e) { /* storage blocked; dismiss for this page only */ }
+      removeWarning();
+    });
+
+    warning.append(text, close);
+    document.body.appendChild(warning);
+  }
+
+  function removeWarning() {
+    const warning = document.getElementById(WARNING_ID);
+    if (warning) warning.remove();
+  }
+
   // ── Toast notification ────────────────────────────────────────────────
 
   function showToast(message) {
@@ -147,19 +261,21 @@
       // A single turn can contain multiple message blocks (preamble,
       // collapsed thinking, final response), each with its own
       // [data-message-author-role] and .markdown.prose. Process each.
-      const messages = article.querySelectorAll(SELECTORS.messageRole);
+      // Since 2026-10 one turn holds a user message AND its reply, so the
+      // speaker header is emitted whenever the role changes.
+      const messages = article.querySelectorAll(SELECTORS.message);
       if (!messages.length) return;
 
-      let headerEmitted = false;
+      let lastRole = null;
 
       messages.forEach((messageEl) => {
-        const authorRole = messageEl.getAttribute('data-message-author-role');
+        const authorRole = getMessageRole(messageEl);
         if (authorRole !== 'user' && authorRole !== 'assistant') return;
 
-        if (!headerEmitted) {
+        if (authorRole !== lastRole) {
           parts.push(authorRole === 'user' ? '##### You said:' : '###### ChatGPT said:');
           parts.push('');
-          headerEmitted = true;
+          lastRole = authorRole;
         }
 
         if (authorRole === 'user') {
@@ -190,6 +306,15 @@
     });
 
     return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+  }
+
+  function getMessageRole(messageEl) {
+    const role = messageEl.getAttribute('data-message-author-role');
+    if (role) return role;
+    // e.g. data-chatgpt-search-unit-key="fallback-turn-0:2:assistant"
+    const key = messageEl.getAttribute('data-chatgpt-search-unit-key') || '';
+    const match = key.match(/:(user|assistant)$/);
+    return match ? match[1] : null;
   }
 
   // ── HTML-to-Markdown converter ────────────────────────────────────────
@@ -268,9 +393,9 @@
         return '###### ' + convertChildren(node) + '\n\n';
 
       case 'ul':
-        return convertList(node, false) + '\n';
+        return convertList(node, false) + '\n\n';
       case 'ol':
-        return convertList(node, true) + '\n';
+        return convertList(node, true) + '\n\n';
 
       case 'li': {
         // Handled by convertList
@@ -285,6 +410,7 @@
           .join('\n') + '\n\n';
 
       case 'a': {
+        if (node.matches(SELECTORS.citation)) return convertCitation(node);
         const href = node.getAttribute('href') || '';
         const text = convertChildren(node);
         if (!href || href === text) return text;
@@ -311,6 +437,16 @@
       default:
         return convertChildren(node);
     }
+  }
+
+  // Citation chips have no href; the source name and URL live in aria-label:
+  // "Realtor: <page title>, https://…, 1 additional source".
+  function convertCitation(node) {
+    const label = node.getAttribute('aria-label') || '';
+    const url = (label.match(/https?:\/\/[^\s,]+/) || [])[0];
+    const name = (label.split(':')[0] || node.textContent).trim();
+    if (!url) return name ? ' (' + name + ')' : '';
+    return ' ([' + name + '](' + url + '))';
   }
 
   function convertChildren(node) {
@@ -418,6 +554,7 @@
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
         removeButton();
+        scheduleHealthCheck();
       }
       if (isConversationPage()) {
         injectButton();
@@ -448,4 +585,5 @@
   if (isConversationPage()) {
     injectButton();
   }
+  scheduleHealthCheck();
 })();
